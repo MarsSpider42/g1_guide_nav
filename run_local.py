@@ -317,7 +317,7 @@ def run_live_cloud_view(bag_path, duration=150, start_frame=0, debug=False):
         # PROCESSING PIPELINE
         # -------------------------------------------------
         LP.update_cloud(points)
-        LP.process(False, False)
+        LP.process(False)
 
         # -------------------------------------------------
         # OPEN3D LIVE UPDATE
@@ -369,6 +369,8 @@ def run_live_snake_view(bag_path, config : snake_planner.SnakeConfig = None, rai
     else:
         extractor = snake_planner.StraightRailExtractor(config)
 
+    from matplotlib.lines import Line2D
+
     # =====================================================
     # MATPLOTLIB INTERACTIVE SETUP
     # =====================================================
@@ -387,16 +389,25 @@ def run_live_snake_view(bag_path, config : snake_planner.SnakeConfig = None, rai
              head_length=GRID_HEIGHT_M * 0.03,
              length_includes_head=True, color='red')
 
-    # one line per rail (free-space band) + one line for the snake
-    band_lines = [ax.plot([], [], color="cyan", linewidth=0.5, alpha=0.6)[0]
+    # create the line objects ONCE; each frame only updates their data
+    band_lines = [ax.plot([], [], color="cyan", linewidth=1.0, alpha=0.8)[0]
                   for _ in range(config.num_rails)]
     snake_line, = ax.plot([], [], color="lime", linewidth=2,
                           marker="o", markersize=3)
+
+    # legend is static, so build it once here
+    ax.legend(handles=[
+        Line2D([0], [0], color="cyan", lw=1, label="Closed rail"),
+        Line2D([0], [0], color="orange", lw=1, label="Open rail (used)"),
+        Line2D([0], [0], color="orange", lw=1, ls="--", label="Open rail (dropped, corridor)"),
+        Line2D([0], [0], color="lime", lw=2, marker="o", markersize=3, label="Snake"),
+    ], loc="upper right", fontsize=8)
 
     ax.set_title(f"Live Snake ({rail_type} rails)")
     ax.set_xlabel("Left / Right (m)")
     ax.set_ylabel("Forward Distance (m)")
     ax.set_aspect('equal')
+    ax.set_autoscale_on(False)          # stop empty/updated lines rescaling the axes
     plt.show(block=False)
 
     # =====================================================
@@ -436,8 +447,8 @@ def run_live_snake_view(bag_path, config : snake_planner.SnakeConfig = None, rai
         # -------------------------------------------------
         points = pull_single_scan(bag_path, i, debug)
         LP.update_cloud(points)
-        LP.process(False, False)
-        grid = LP.occupancy_grid          # <-- adjust to your attribute name
+        LP.process(False)
+        grid = LP.occupancy_grid
 
         if i == start_frame and abs(grid.shape[0] * CELL_SIZE - GRID_HEIGHT_M) > 1e-6:
             print(f"WARNING: grid {grid.shape} x CELL_SIZE {CELL_SIZE} != "
@@ -452,20 +463,25 @@ def run_live_snake_view(bag_path, config : snake_planner.SnakeConfig = None, rai
         plan_ms = (time.perf_counter() - t0) * 1000
 
         # -------------------------------------------------
-        # UPDATE PLOT
+        # UPDATE PLOT (reuse existing artists)
         # -------------------------------------------------
         img.set_data(grid)
 
-        for line, r in zip(band_lines, rails):
-            if r.valid:
+        for k, line in enumerate(band_lines):
+            r = rails[k] if k < len(rails) else None
+            is_open = r is not None and not (r.left_closed and r.right_closed)
+            # draw valid rails, plus open rails dropped by the corridor rule;
+            # skip rails with no free space (they default to "closed" and invalid)
+            if r is not None and (r.valid or is_open):
                 xs, ys = r.to_xy(np.linspace(r.lower, r.upper, 50))
                 line.set_data(xs, ys)
+                line.set_color("orange" if is_open else "cyan")
+                line.set_linestyle("--" if (is_open and not r.valid) else "-")
             else:
                 line.set_data([], [])
 
         pts = [r.to_xy(v) for r, v in zip(rails, planner.vertices) if r.valid]
-        snake_line.set_data([float(p[0]) for p in pts],
-                            [float(p[1]) for p in pts])
+        snake_line.set_data([float(pt[0]) for pt in pts], [float(pt[1]) for pt in pts])
 
         ax.set_title(f"Live Snake ({rail_type}) - frame {i} - plan {plan_ms:.1f} ms")
         fig.canvas.draw_idle()
@@ -513,24 +529,50 @@ def run_snake_command_view(bag_path, start_frame=0, frame_delay=0.3, duration=10
     plt.ioff()
     plt.show()
 
+
+def command_case(bag, frame, title, warmup=10):
+    """Pipeline result for one frame, with the follower's smoothing/hysteresis state warmed up."""
+    pipe = NavPipeline()
+    res = None
+    for i in range(max(0, frame - warmup), frame + 1):
+        res = pipe.process(pull_single_scan(bag, i, False))
+    res["title"] = title
+    return res
+
+
+
 if __name__ == "__main__":
 
-    # points = pull_single_scan(bag_list.extracted_bags[6], 600, True)
-    # LP = lidar_processor.LidarProcessor(points, 1000)
-    # LP.process(True)
-    # EX = snake_planner.RadialRailExtractor(config=snake_planner.SnakeConfig(w_external=3, w_internal=90, num_rails=18,
-    #                                             min_dist_m=1, max_dist_m=3.5), debug=True)
-    # rails = EX.extract_rails(LP.occupancy_grid)
-    # SP = snake_planner.SnakePlanner(debug=True)
-    # SP.plan(rails)
+    
+    # for i in np.linspace(450, 700, 350, dtype=int):
+        # print(f"\n\n{i}")
+    points = pull_single_scan(bag_list.extracted_bags[9], 345, True)
+    LP = lidar_processor.LidarProcessor(points, 1000)
+    LP.process(False)
+    EX = snake_planner.RadialRailExtractor(config=snake_planner.SnakeConfig(w_external=3, w_internal=90, num_rails=18,
+                                                min_dist_m=1, max_dist_m=3.5), debug=True)
+    rails = EX.extract_rails(LP.occupancy_grid)
+    SP = snake_planner.SnakePlanner(debug=False)
+    SP.plan(rails)
 
-    # PP = path_follower.PathFollower()
-    # command = PP.compute(rails, SP.vertices, LP.occupancy_grid)
+    PP = path_follower.PathFollower()
+    command = PP.compute(rails, SP.vertices, LP.occupancy_grid)
 
     # local_vis_wrapper.show_height_grid(LP)
-    # local_vis_wrapper.plot_snake(SP, LP.occupancy_grid, rails)
+    local_vis_wrapper.plot_snake(SP, LP.occupancy_grid, rails)
     # local_vis_wrapper.plot_blindspot_mask(LP)
-    # local_vis_wrapper.plot_guidance_point(SP, PP, LP.occupancy_grid, rails, True)
+    # local_vis_wrapper.plot_guidance_point(SP, PP, LP.occupancy_grid, rails, False)
     # local_vis_wrapper.plot_command_signal(PP)
 
-    run_snake_command_view(bag_list.extracted_bags[8], 500)
+    B = bag_list.extracted_bags
+    cases = [
+        command_case(B[7], 500, "Drive"),
+        command_case(B[9], 485, "Arc"),
+        command_case(B[3], 40, "Pivot"),
+        command_case(B[4], 398, "Stop"),
+    ]
+    local_vis_wrapper.plot_command_panels(cases, save_path="fig_command_modes.png", show_planner=False)
+
+    # run_snake_command_view(bag_list.extracted_bags[9], start_frame=200)
+
+    # local_vis_wrapper.plot_blindspot_mask(LP)

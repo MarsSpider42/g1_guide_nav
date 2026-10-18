@@ -11,6 +11,7 @@ import lidar_processor
 import snake_planner
 import path_follower
 import robot_marker
+from command_view import CommandView
 
 
 def show_occupancy_grid(p : lidar_processor.LidarProcessor):
@@ -313,7 +314,7 @@ def plot_snake(p : snake_planner.SnakePlanner, grid, rails):
     ax.set_ylabel("Forward Distance (m)")
     plt.show()
 
-def plot_blindspot_mask(p : lidar_processor.LidarProcessor, show_fill=True):
+def plot_blindspot_mask(p : lidar_processor.LidarProcessor, show_fill=True, comparison=False):
     from matplotlib.lines import Line2D
     from matplotlib.patches import Patch, Rectangle
     raw  = p.raw_occupancy_grid
@@ -328,7 +329,7 @@ def plot_blindspot_mask(p : lidar_processor.LidarProcessor, show_fill=True):
     forward = p.G_X_MIN + (np.arange(H) + 0.5) * res   # same convention the mask uses
 
     fig, axes = plt.subplots(1, 2, figsize=(10, 6), sharey=True)
-    panels = [(raw, "(a) Before filtering"), (filt, "(b) After blind-spot closing")]
+    panels = [(raw, "(a) Raw occupancy grid"), (filt, "(b) After blind-spot closing & filtering")]
 
     for ax, (grid, title) in zip(axes, panels):
         # occupied = black, free = white
@@ -344,12 +345,11 @@ def plot_blindspot_mask(p : lidar_processor.LidarProcessor, show_fill=True):
                    colors="tab:orange", linewidths=1.5)
 
         # robot footprint (approx. 0.45 m wide x 0.2 m deep), centred at the origin
-        ax.add_patch(Rectangle((-0.225, -0.1), 0.45, 0.2, color="tab:red", zorder=3))
+        robot_marker.add_robot(ax)
 
         ax.set_title(title)
         ax.set_xlabel("Left / Right (m)")
         ax.set_aspect("equal")
-        ax.set_ylim(-0.15, p.G_X_MAX)
 
     axes[0].set_ylabel("Forward distance (m)")
 
@@ -435,10 +435,10 @@ def set_arrow(arrow, start, end):
         arrow.set_positions(start, end)
         arrow.set_visible(True)
 
-def plot_command_signal(p : path_follower.PathFollower, reach_m=2.0):
+MODE_COLORS = {"drive": "lime", "arc": "orange", "pivot": "red", "stop": "lightgrey"}
+
+def plot_command_signal(p : path_follower.PathFollower, reach_m=2.5):
     from matplotlib.patches import FancyArrowPatch
-    MODE_COLORS = {"drive": "lime", "arc": "orange", "pivot": "red", "stop": "lightgrey"}
-    
     cmd, tgt, err = p.last_cmd, p.target_xy, p.err_f
     if cmd is None:
         raise ValueError("Run p.compute(...) before plotting")
@@ -448,11 +448,12 @@ def plot_command_signal(p : path_follower.PathFollower, reach_m=2.0):
     robot_marker.add_robot(ax)                                  # call first: it adjusts the y limits
     ax.set_facecolor("black")
     ax.set_xlim(-reach_m, reach_m)
-    ax.set_ylim(-0.5, reach_m)
+    ax.set_ylim(0, reach_m)
     ax.set_aspect("equal")
     ax.grid(True, color="0.25", linewidth=0.5)
     ax.set_xlabel("Left / Right (m)")
     ax.set_ylabel("Forward Distance (m)")
+    ax.set_title("Generated Locomotion Command")
 
     def arrow(color, width):
         a = FancyArrowPatch((0, 0), (0, 0), arrowstyle="-|>", mutation_scale=22,
@@ -489,4 +490,115 @@ def plot_command_signal(p : path_follower.PathFollower, reach_m=2.0):
             fontsize=14, family="monospace", color=MODE_COLORS[m],
             bbox=dict(boxstyle="round", facecolor="black", alpha=0.75, edgecolor="white"))
 
+    plt.show()
+
+def show_command_view_frame(grid, rails, planner, follower,
+                            frame=None, timing=None, reach_m=2.0):
+    from matplotlib.lines import Line2D
+    from matplotlib.patches import FancyArrowPatch
+    """Show the two-pane CommandView for a single frame and keep the window open.
+    Call after:
+        planner.plan(rails)
+        cmd = follower.compute(rails, planner.vertices, grid)
+    timing (optional): dict like {"ground_ms": 12.3, "snake_ms": 2.1}; keys must end in "_ms"."""
+    view = CommandView(num_rails=len(rails), reach_m=reach_m, grid_shape=grid.shape,
+                       max_vx=follower.config.max_vx, max_omega=follower.config.max_omega)
+
+    view.update({
+        "grid": grid,
+        "rails": rails,
+        "vertices": planner.vertices,
+        "cmd": follower.last_cmd,
+        "target_xy": follower.target_xy,
+        "err": follower.err_f,          # smoothed heading error, as the live view uses
+        "frame": "-" if frame is None else frame,
+        "timing": timing or {},
+    })
+
+    # CommandView turns interactive mode on for live playback; switch it off
+    # so plt.show() blocks and the window stays open
+    plt.ioff()
+    plt.show()
+
+
+def _draw_guidance_command(ax, grid, rails, vertices, target_xy, cmd, title,
+                           show_planner=True, crop=(-2.0, 2.0, 0.0, 3.5), max_vx=0.4, max_omega=0.7):
+    from matplotlib.patches import FancyArrowPatch
+    """One panel: grid (+ rails/snake), guidance point, and the command drawn at the robot."""
+    rows, cols = grid.shape
+    half_w = cols * snake_planner.CELL_SIZE / 2
+    ax.imshow(grid, cmap="gray", origin="lower", extent=[-half_w, half_w, 0, rows * snake_planner.CELL_SIZE])
+    ax.set_xlim(crop[0], crop[1])
+    ax.set_ylim(crop[2] - 0.1, crop[3])
+    ax.set_autoscale_on(False)
+    ax.set_aspect("equal")
+
+    if show_planner:
+        for r in rails:
+            is_open = not (r.left_closed and r.right_closed)
+            if not is_open and not r.valid:
+                continue
+            xs, ys = r.to_xy(np.linspace(r.lower, r.upper, 50))
+            ax.plot(xs, ys, color="orange" if is_open else "cyan", linewidth=0.8, alpha=0.7,
+                    linestyle="--" if (is_open and not r.valid) else "-")
+        pts = [r.to_xy(v) for r, v in zip(rails, vertices) if r.valid]
+        ax.plot([float(p[0]) for p in pts], [float(p[1]) for p in pts],
+                color="lime", linewidth=1.5, marker="o", markersize=2, alpha=0.8)
+
+    # guidance point and the straight path the follower checked
+    if target_xy is not None:
+        gx, gy = target_xy
+        ax.plot([0, gx], [0, gy], color="yellow", linewidth=1.2, linestyle=":")
+        ax.plot(gx, gy, marker="*", color="yellow", markersize=16, markeredgecolor="black", zorder=5)
+
+    robot_marker.add_robot(ax)
+
+    # command glyph at the robot: forward arrow (vx) and turn arc (omega)
+    front = robot_marker.ROBOT_DEPTH_M
+    if cmd.vx > 0:
+        ax.add_patch(FancyArrowPatch((0, front), (0, front + 0.6 * cmd.vx / max_vx), arrowstyle="-|>",
+                                     mutation_scale=14, color="lime", linewidth=3, zorder=6))
+    if cmd.omega != 0:
+        sweep = np.radians(70) * min(1.0, abs(cmd.omega) / max_omega)
+        phi = np.pi / 2 + np.sign(cmd.omega) * np.linspace(0.0, sweep, 30)   # + omega = left
+        xs, ys = 0.35 * np.cos(phi), 0.35 * np.sin(phi)
+        ax.plot(xs, ys, color="orange", linewidth=2.5, zorder=6)
+        ax.add_patch(FancyArrowPatch((xs[-3], ys[-3]), (xs[-1], ys[-1]), arrowstyle="-|>",
+                                     mutation_scale=14, color="orange", linewidth=2.5, zorder=6))
+
+    # mode label
+    mode = mode_of(cmd)
+    ax.text(0.03, 0.97, f"{mode.upper()}\nvx {cmd.vx:.1f} m/s\nω {cmd.omega:+.1f} rad/s",
+            transform=ax.transAxes, va="top", ha="left", fontsize=8, family="monospace",
+            color=MODE_COLORS[mode], bbox=dict(boxstyle="round", facecolor="black", alpha=0.75))
+    ax.set_title(title, fontsize=9)
+    ax.set_xticks([]); ax.set_yticks([])
+
+
+def plot_command_panels(cases, ncols=4, show_planner=True, save_path=None):
+    """cases: list of dicts from NavPipeline.process (grid, rails, vertices, target_xy, cmd) plus 'title'."""
+    from matplotlib.lines import Line2D
+    import matplotlib.patheffects as pe
+    nrows = int(np.ceil(len(cases) / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(3.2 * ncols, 3.4 * nrows), squeeze=False)
+    for ax, c in zip(axes.flat, cases):
+        _draw_guidance_command(ax, c["grid"], c["rails"], c["vertices"], c["target_xy"], c["cmd"],
+                               c["title"], show_planner=show_planner)
+    for ax in list(axes.flat)[len(cases):]:
+        ax.axis("off")
+
+    handles = [Line2D([0], [0], color="yellow", marker="*", markersize=10, lw=0,
+                      markeredgecolor="black", label="Guidance point"),
+               Line2D([0], [0], color="yellow", lw=2.5, ls=":", label="Checked path",
+                      path_effects=[pe.Stroke(linewidth=3.5, foreground="black"), pe.Normal()]),
+               Line2D([0], [0], color="lime", lw=3, label="Forward command"),
+               Line2D([0], [0], color="orange", lw=2.5, label="Turn command")]
+    if show_planner:
+        handles = [Line2D([0], [0], color="cyan", lw=1, label="Closed rail"),
+                   Line2D([0], [0], color="orange", lw=1, alpha=0.7, label="Open rail"),
+                   Line2D([0], [0], color="lime", lw=1.5, marker="o", markersize=2, label="Snake")] + handles
+    fig.legend(handles=handles, loc="lower center", ncol=len(handles), fontsize=8, frameon=False)
+    fig.tight_layout(rect=(0, 0.07, 1, 1))
+    if save_path:
+        fig.savefig(save_path, dpi=300, bbox_inches="tight")
     plt.show()
