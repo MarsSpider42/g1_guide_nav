@@ -1,0 +1,6 @@
+{
+  "source_bag": "/home/dream/bags/lidar_test_bag_080926_1220pm/",
+  "topic": "/livox/lidar",
+  "format": "custom",
+  "num_scans": 294
+}
