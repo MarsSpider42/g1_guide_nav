@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.pyc
+
+datasets/__pycache__/
+*.pyc
+
+live_test/g1_files/__pycache__/
+*.pyc
+
+live_test/visualiser_files/__pycache__/
+*.pyc
+
+nav_source/__pycache__/
+*.pyc
+
+# Data: large, and shouldn't go in Git
+datasets/
+*.db3
+*.mcap
+
+# Generated figures (remove this line if you want figures tracked)
+*.png
+
+# Editor / OS files
+.vscode/
+.idea/
+*.swp
+.DS_Store
