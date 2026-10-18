@@ -222,7 +222,7 @@ if __name__ == "__main__":
     # usage: MPLBACKEND=Agg python3 time_pipeline.py [<extracted scan folder> [start_frame [num_frames]]]
     #        python3 time_pipeline.py --plot <saved timing_*.npz>      (re-draw a saved run's graph)
     # with no arguments it times extracted_bags[10] from bag_list.py
-    plot_timing('/home/dream/g1_guide_nav/timing_runs/timing_20261018_012456_lidar_test_bag_261014_2_06pm.npz')
+    # plot_timing('/home/dream/g1_guide_nav/timing_runs/timing_20261018_012456_lidar_test_bag_261014_2_06pm.npz')
     if len(sys.argv) > 2 and sys.argv[1] == "--plot":
         plot_timing(sys.argv[2])
     elif len(sys.argv) > 1:
