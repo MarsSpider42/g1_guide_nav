@@ -400,6 +400,129 @@ class LidarProcessor:
             invert=True
         )
 
+    def __legacy_reorient_RANSAC_only(self, debug):
+        # Dynamic Cloud Reorient #
+        _GROUND_PLANE_THRESHOLD = 0.05 #m
+        _RANSAC_N = 5
+        _ITERATIONS = 300
+
+        _MAX_PLANES_TO_FIT = 8
+        _MIN_ALIGNMENT = np.cos(np.deg2rad(50)) #degrees
+
+        _FLAT_PLANES_REWARD_COEF = 5.0
+        _LARGE_PLANES_REWARD_COEF = 0.001
+        _LOW_CENTROID_REWARD_COEF = 0.5
+
+        ## CREATE PCD ##
+        fitting_pcd = o3d.geometry.PointCloud(self.std_reoriented_cloud.points)
+
+        # START VARIABLES FOR SEARCH #
+        best_plane = None
+        best_normal = None
+        best_inliers = None
+        best_score = -np.inf
+
+        ## SET ASSUMED WORLD FRAME UP ##
+        estimated_up  = np.array([0,0,1]) # currently just a vector along Z
+
+        ## SEARCH MULTIPLE PLANES ##
+        for i in range(_MAX_PLANES_TO_FIT):
+            if(len(fitting_pcd.points) < 500):
+                break
+            
+            plane_model, inliers = fitting_pcd.segment_plane(
+                distance_threshold=_GROUND_PLANE_THRESHOLD,
+                ransac_n=_RANSAC_N,
+                num_iterations=_ITERATIONS
+            )
+
+            [a, b, c, d] = plane_model
+
+            normal = np.array([a, b, c])
+            normal /= np.linalg.norm(normal)
+
+            # flip towards estimated up if required
+            if np.dot(normal, estimated_up) < 0:
+                normal = -normal
+
+            ## CALCULATE ALIGNMENT SCORE OF FITTED PLANE ##
+            alignment  = np.dot(normal, estimated_up)
+
+            if debug:
+                print(f"Plane {i}\nNormal: {normal}, Alignment: {alignment}, Num Inliers: {len(inliers)}")
+
+            ## REJECT PROBABLE WALLS ##
+            if alignment < _MIN_ALIGNMENT:
+                fitting_pcd = fitting_pcd.select_by_index(inliers, invert = True)
+
+                if debug:
+                    print(f"\nRejected Plane {i}, too vertical\n")
+                
+                continue
+
+            ## FIT ANOTHER HEURISTIC, REWARDING LOW PLANES, LARGE PLANES, AND FLAT PLANES ##
+            plane_cloud = fitting_pcd.select_by_index(inliers)
+
+            plane_points = np.asarray(plane_cloud.points)
+
+
+            centroid = plane_points.mean(axis=0)
+
+            score = (_FLAT_PLANES_REWARD_COEF * alignment
+                + _LARGE_PLANES_REWARD_COEF * len(inliers)
+                + _LOW_CENTROID_REWARD_COEF * centroid[2])
+
+
+            if debug:
+                print(f"Centroid: {centroid}, Score: {score}")
+
+            if score > best_score:
+                best_score = score
+                best_plane = plane_model
+                best_normal = normal
+                best_inliers = inliers
+
+            # Remove plane and continue searching
+            fitting_pcd = fitting_pcd.select_by_index(
+                inliers,
+                invert=True
+            )
+
+        ## CHECK IF A VALID GROUND HAS BEEN FOUND ##
+        if best_plane is None:
+            
+            raise RuntimeError("No valid ground plane found")
+
+        self.ground_tilt_deg = float(np.degrees(np.arccos(np.clip(best_normal[2], -1.0, 1.0))))
+
+        if debug:
+            print(f"\nSelected ground plane normal from Plane {i}: {best_normal}\n")
+
+        ## COMPUTE ROTATION ##
+        rotation_axis = np.cross(best_normal, estimated_up)
+        rotation_axis_norm = np.linalg.norm(rotation_axis) 
+
+        if rotation_axis_norm > 1e-6: # if rotation is too small, do not apply
+            rotation_axis /= rotation_axis_norm
+
+            angle = np.arccos(np.clip(np.dot(best_normal, estimated_up), -1.0, 1.0))
+
+            R = o3d.geometry.get_rotation_matrix_from_axis_angle(rotation_axis * angle)
+        else:
+            R = np.eye(3)
+
+        ## APPLY ROTATION ##
+        aligned_pcd = o3d.geometry.PointCloud(self.std_reoriented_cloud.points)
+        aligned_pcd.rotate(R, center=(0,0,0))
+
+        ## SEPARATE CLOUDS FOR RETURN ##
+        self.ground_plane_cloud = aligned_pcd.select_by_index(best_inliers)
+        
+        self.non_ground = aligned_pcd.select_by_index(best_inliers, invert=True)
+        self.best_normal = best_normal
+
+        
+
     def __identify_sections(self, debug):
 
         points = np.asarray(self.reoriented_cloud.points)
