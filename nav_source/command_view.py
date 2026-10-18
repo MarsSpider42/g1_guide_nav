@@ -67,7 +67,7 @@ class CommandView:
         add_robot(ax)                                  # call first: it adjusts the y limits
         ax.set_facecolor("black")
         ax.set_xlim(-reach_m, reach_m)
-        ax.set_ylim(-0.5, reach_m)
+        ax.set_ylim(0, reach_m)
         ax.set_aspect("equal")
         ax.grid(True, color="0.25", linewidth=0.5)
         ax.set_xlabel("Left / Right (m)")
